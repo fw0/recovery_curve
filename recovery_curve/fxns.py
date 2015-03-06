@@ -215,7 +215,7 @@ class traces(traces_base):
         return np.concatenate([self.param_to_chain_trace(param,chain) for chain in xrange(self.num_chains)])
 
     def param_dim(self, param):
-        return self.permuted[param].shape[2]
+        return self.permuted[param].shape[1]
     
     def gelman_statistic(self, param):
         within = np.var(self.param_to_trace(param))
