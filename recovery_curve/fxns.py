@@ -232,7 +232,7 @@ class traces(traces_base):
             for (i,param_ax) in enumerate(param_axes):
                 param_ax.set_title('%s %d' % (param,i))
                 for j in xrange(self.num_chains):
-                    component_trace = self.param_to_chain_trace(param,i)[:,j]
+                    component_trace = self.param_to_chain_trace(param,j)[:,i]
                     param_ax.plot(component_trace[0:len(component_trace):thin], alpha=0.5)
         return figs
             
