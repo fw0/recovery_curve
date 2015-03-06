@@ -229,11 +229,13 @@ class traces(traces_base):
             n_rows, n_cols = (1,1) if dim == 1 else (3,1)
             param_figs, param_axes = basic_utils.get_grid_fig_axes(n_rows, n_cols, dim)
             assert len(param_axes) == dim
+            pdb.set_trace()
             for (i,param_ax) in enumerate(param_axes):
                 param_ax.set_title('%s %d' % (param,i))
                 for j in xrange(self.num_chains):
                     component_trace = self.param_to_chain_trace(param,j)[:,i]
                     param_ax.plot(component_trace[0:len(component_trace):thin], alpha=0.5)
+            figs += param_figs
         return figs
             
 def get_everything_dist_traces_helper(n_steps, random_seed, num_chains, everything_dist, s_ns, x_ns, ts_ns, ys_ns):
