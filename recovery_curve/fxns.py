@@ -214,21 +214,29 @@ class traces(traces_base):
     def param_to_trace(self, param):
         return np.concatenate([self.param_to_chain_trace(param,chain) for chain in xrange(self.num_chains)])
 
+    def param_dim(self, param):
+        return self.permuted[param].shape[2]
+    
     def gelman_statistic(self, param):
         within = np.var(self.param_to_trace(param))
         between = np.mean(np.array([np.var(self.param_to_chain_trace(param, i)) for i in xrange(self.num_chains)]))
         return (within, between)
 
-    def print_diagnostic(self, param, ax):
-        """
-        accepts ax on which to plot
-        """
-        for i in xrange(self.num_chains):
-            ax.plot(self.param_to_chain_trace(param, i), label=str(i), alpha=0.5)
-        ax.set_title('%s %s' % (param, 'within:%.2f between:%.2f' % self.gelman_statistic(param)))
-        ax.legend()
+    def trace_figs(self, params, thin=1):
+        figs = []
+        for param in params:
+            dim = self.param_dim(param)
+            n_rows, n_cols = (1,1) if dim == 1 else (3,1)
+            param_figs, param_axes = basic_utils.get_grid_fig_axes(n_rows, n_cols, dim)
+            assert len(param_axes) == dim
+            for (i,param_ax) in enumerate(param_axes):
+                param_ax.set_title('%s %d' % (param,i))
+                for j in xrange(self.num_chains):
+                    component_trace = self.param_to_chain_trace(param,i)[:,j]
+                    param_ax.plot(component_trace[0:len(component_trace):thin], alpha=0.5)
+        return figs
             
-def get_everything_dist_traces_helper(n_steps, random_seed, everything_dist, s_ns, x_ns, ts_ns, ys_ns, num_chains=1):
+def get_everything_dist_traces_helper(n_steps, random_seed, num_chains, everything_dist, s_ns, x_ns, ts_ns, ys_ns):
 
     stan_file = '%s/%s' % (STAN_FOLDER, 'basic_model_mix.stan')
 
@@ -262,7 +270,7 @@ def get_everything_dist_traces_helper(n_steps, random_seed, everything_dist, s_n
     fit = pystan.stan(file=stan_file, data=d, iter=n_steps, seed=random_seed, chains=num_chains)
     return traces(fit.extract(permuted=True), fit.extract(permuted=False), fit.data)
 
-def get_everything_with_test_dist_traces_helper(n_steps, random_seed, everything_dist, s_ns, x_ns, ts_ns, ys_ns, s_ns_test, x_ns_test, num_chains=1):
+def get_everything_with_test_dist_traces_helper(n_steps, random_seed, num_chains, everything_dist, s_ns, x_ns, ts_ns, ys_ns, s_ns_test, x_ns_test):
 
     stan_file = '%s/%s' % (STAN_FOLDER, 'basic_model_mix_with_test.stan')
 
@@ -317,7 +325,7 @@ def get_everything_with_test_dist_traces_helper(n_steps, random_seed, everything
     return traces(fit.extract(permuted=True), fit.extract(permuted=False), fit.data)
 
 
-def get_everything_with_test_phis_fixed_dist_traces_helper(n_steps, random_seed, everything_dist, s_ns, x_ns, ts_ns, ys_ns, s_ns_test, x_ns_test, num_chains=1):
+def get_everything_with_test_phis_fixed_dist_traces_helper(n_steps, random_seed, num_chains, everything_dist, s_ns, x_ns, ts_ns, ys_ns, s_ns_test, x_ns_test):
 
     stan_file = '%s/%s' % (STAN_FOLDER, 'basic_model_mix_with_test_phis_fixed.stan')
 
@@ -457,10 +465,9 @@ class recovery_predictor(object):
     """
     traces_helper has to be compatible with everything_dist
     """
-    def __init__(self, n_steps, random_seed, everything_dist_fitter, traces_helper, point_f, recovery_X_train, ys_ns_train):
-        self.n_steps, self.random_seed, self.everything_dist_fitter, self.traces_helper, self.point_f = n_steps, random_seed, everything_dist_fitter, traces_helper, point_f
-        self.recovery_X_train = recovery_X_train
-        self.ys_ns_train = ys_ns_train
+    def __init__(self, n_steps, random_seed, everything_dist_fitter, traces_helper, point_f, num_chains, recovery_X_train, ys_ns_train):
+        self.n_steps, self.random_seed, self.everything_dist_fitter, self.traces_helper, self.point_f, self.num_chains = n_steps, random_seed, everything_dist_fitter, traces_helper, point_f, num_chains
+        self.recovery_X_train, self.ys_ns_train = recovery_X_train, ys_ns_train
 
     def predict(self, recovery_X_test):
         """
@@ -469,11 +476,12 @@ class recovery_predictor(object):
         s_ns_test, x_ns_test, ts_ns_test = recovery_X_test
         s_ns_train, x_ns_train, ts_ns_train = self.recovery_X_train
         everything_dist = self.everything_dist_fitter(self.recovery_X_train, self.ys_ns_train)
-        traces = self.traces_helper(self.n_steps, self.random_seed, everything_dist, s_ns_train, x_ns_train, ts_ns_train, self.ys_ns_train, s_ns_test, x_ns_test)
+        traces = self.traces_helper(self.n_steps, self.random_seed, self.num_chains, everything_dist, s_ns_train, x_ns_train, ts_ns_train, self.ys_ns_train, s_ns_test, x_ns_test)
         recovery_curve_samples = [\
                                   [recovery_curve(s,a,b,c) for (a,b,c) in itertools.izip(a_i_samples, b_i_samples, c_i_samples)] \
                                   for (s, a_i_samples, b_i_samples, c_i_samples) in itertools.izip(s_ns_test, traces.param_to_trace('as_test').T, traces.param_to_trace('bs_test').T, traces.param_to_trace('cs_test').T)\
                                   ]
+        self.traces = traces
         return np.array([\
                         np.array([self.point_f([rc_i_sample(t) for rc_i_sample in rc_i_samples]) for t in ts_i])\
                         for (rc_i_samples, ts_i) in itertools.izip(recovery_curve_samples,ts_ns_test)\
@@ -486,11 +494,11 @@ class recovery_predictor(object):
 
 class recovery_fitter(object):
 
-    def __init__(self, n_steps, random_seed, everything_dist_fitter, traces_helper, point_f):
-        self.n_steps, self.random_seed, self.everything_dist_fitter, self.traces_helper, self.point_f = n_steps, random_seed, everything_dist_fitter, traces_helper, point_f
+    def __init__(self, n_steps, random_seed, num_chains, everything_dist_fitter, traces_helper, point_f):
+        self.n_steps, self.random_seed, self.everything_dist_fitter, self.traces_helper, self.point_f, self.num_chains = n_steps, random_seed, everything_dist_fitter, traces_helper, point_f, num_chains
 
     def fit(self, recovery_X_train, ys_ns_train):
-        return recovery_predictor(self.n_steps, self.random_seed, self.everything_dist_fitter, self.traces_helper, self.point_f, recovery_X_train, ys_ns_train)
+        return recovery_predictor(self.n_steps, self.random_seed, self.everything_dist_fitter, self.traces_helper, self.point_f, self.num_chains, recovery_X_train, ys_ns_train)
     
 
 class mean_scaled_predictor(object):
