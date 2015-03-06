@@ -229,7 +229,6 @@ class traces(traces_base):
             n_rows, n_cols = (1,1) if dim == 1 else (3,1)
             param_figs, param_axes = basic_utils.get_grid_fig_axes(n_rows, n_cols, dim)
             assert len(param_axes) == dim
-            pdb.set_trace()
             for (i,param_ax) in enumerate(param_axes):
                 param_ax.set_title('%s %d' % (param,i))
                 for j in xrange(self.num_chains):
