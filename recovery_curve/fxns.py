@@ -1,4 +1,5 @@
 import recovery_curve.recovery_curve.utils as recovery_utils
+import python_utils.python_utils.caching as caching
 import numpy as np
 import scipy.stats
 import functools
@@ -9,6 +10,7 @@ import pystan
 import pdb
 import python_utils.python_utils.basic as basic_utils
 import pandas as pd
+import python_utils.python_utils.basic as basic
 
 import recovery_curve
 
@@ -210,7 +212,11 @@ class traces(traces_base):
     @property
     def num_chains(self):
         return self.unpermuted.shape[1]
-        
+
+    @property
+    def num_samples(self):
+        return self.unpermuted.shape[0]
+            
     def param_to_trace(self, param):
         return np.concatenate([self.param_to_chain_trace(param,chain) for chain in xrange(self.num_chains)])
 
@@ -218,9 +224,12 @@ class traces(traces_base):
         return self.permuted[param].shape[1]
     
     def gelman_statistic(self, param):
-        within = np.var(self.param_to_trace(param))
-        between = np.mean(np.array([np.var(self.param_to_chain_trace(param, i)) for i in xrange(self.num_chains)]))
-        return (within, between)
+        chain_traces = np.array([self.param_to_chain_trace(param, i) for i in xrange(self.num_chains)])
+        within_variance = np.mean(np.var(chain_traces, axis=1, ddof=1))
+        between_variance = self.num_samples * np.var(np.mean(chain_traces, axis=1), axis=0, ddof=1)
+        var_hat = (1.-(1./self.num_samples)) * within_variance + (between_variance/self.num_samples)
+        return (var_hat / within_variance)**0.5
+
 
     def trace_figs(self, params, thin=1):
         figs = []
@@ -228,15 +237,19 @@ class traces(traces_base):
             dim = self.param_dim(param)
             n_rows, n_cols = (1,1) if dim == 1 else (3,1)
             param_figs, param_axes = basic_utils.get_grid_fig_axes(n_rows, n_cols, dim)
+            gelman_statistics = self.gelman_statistic(param)
             assert len(param_axes) == dim
-            for (i,param_ax) in enumerate(param_axes):
-                param_ax.set_title('%s %d' % (param,i))
+            for (i,(param_ax,gelman_statistic)) in enumerate(zip(param_axes,gelman_statistics)):
+                param_ax.set_title('%s %d %.2f' % (param,i,gelman_statistic))
                 for j in xrange(self.num_chains):
                     component_trace = self.param_to_chain_trace(param,j)[:,i]
                     param_ax.plot(component_trace[0:len(component_trace):thin], alpha=0.5)
             figs += param_figs
         return figs
-            
+
+@caching.default_read_fxn_decorator
+#@basic.raise_exception_fxn_decorator()
+@caching.default_write_fxn_decorator
 def get_everything_dist_traces_helper(n_steps, random_seed, num_chains, everything_dist, s_ns, x_ns, ts_ns, ys_ns):
 
     stan_file = '%s/%s' % (STAN_FOLDER, 'basic_model_mix.stan')
@@ -271,6 +284,8 @@ def get_everything_dist_traces_helper(n_steps, random_seed, num_chains, everythi
     fit = pystan.stan(file=stan_file, data=d, iter=n_steps, seed=random_seed, chains=num_chains)
     return traces(fit.extract(permuted=True), fit.extract(permuted=False), fit.data)
 
+@caching.default_read_fxn_decorator
+@caching.default_write_fxn_decorator
 def get_everything_with_test_dist_traces_helper(n_steps, random_seed, num_chains, everything_dist, s_ns, x_ns, ts_ns, ys_ns, s_ns_test, x_ns_test):
 
     stan_file = '%s/%s' % (STAN_FOLDER, 'basic_model_mix_with_test.stan')
@@ -325,7 +340,8 @@ def get_everything_with_test_dist_traces_helper(n_steps, random_seed, num_chains
     fit = pystan.stan(file=stan_file, data=d, iter=n_steps, seed=random_seed, chains=num_chains)
     return traces(fit.extract(permuted=True), fit.extract(permuted=False), fit.data)
 
-
+@caching.default_read_fxn_decorator
+@caching.default_write_fxn_decorator
 def get_everything_with_test_phis_fixed_dist_traces_helper(n_steps, random_seed, num_chains, everything_dist, s_ns, x_ns, ts_ns, ys_ns, s_ns_test, x_ns_test):
 
     stan_file = '%s/%s' % (STAN_FOLDER, 'basic_model_mix_with_test_phis_fixed.stan')
@@ -565,6 +581,85 @@ class logreg_fitter(object):
 
         return logreg_predictor(Bs)
 
+
+class median_predictor(object):
+
+    def __init__(self, agg_medians):
+        self.agg_medians = agg_medians
+
+    def predict(self, recovery_X_test):
+        s_ns_test, x_ns_test, ts_ns_test = recovery_X_test
+        return [np.array(self.agg_medians.xs(list(x)).loc[map(median_fitter.time_key,ts)]) for (x,ts) in itertools.izip(x_ns_test, ts_ns_test)]
+
+class median_fitter(object):
+
+    @classmethod
+    def time_key(cls, t):
+        return 't%d' % t
+    
+    def fit(self, recovery_X_train, ys_ns_train, recovery_X_test, ys_ns_test):
+        """
+        convert ys_ns, ts_ns back into dataframe
+        """
+
+        s_ns_test, x_ns_test, ts_ns_test = recovery_X_test
+        ys_ns_test_df = pd.DataFrame({i:pd.Series(ys, index=map(median_fitter.time_key, ts)) for (i,(ts,ys)) in enumerate(zip(ts_ns_test, ys_ns_test))}).T
+        xs_test_df = pd.DataFrame(x_ns_test)
+
+        s_ns_train, x_ns_train, ts_ns_train = recovery_X_train
+        ys_ns_train_df = pd.DataFrame({i:pd.Series(ys, index=map(median_fitter.time_key, ts)) for (i,(ts,ys)) in enumerate(zip(ts_ns_train, ys_ns_train))}).T
+        xs_train_df = pd.DataFrame(x_ns_train)
+
+        xs_df = pd.concat([xs_test_df, xs_train_df])
+        ys_ns_df = pd.concat([ys_ns_test_df, ys_ns_train_df])
+
+        joined_df = pd.concat([xs_df, ys_ns_df], axis=1)
+        agg_medians = joined_df.groupby(xs_df.columns.values.tolist()).median()
+#        agg_medians = joined_df.groupby(xs_df.columns.values.tolist()).mean()
+        return median_predictor(agg_medians)
+
+
+class scaled_median_predictor(object):
+
+    def __init__(self, agg_medians):
+        self.agg_medians = agg_medians
+
+    def predict(self, recovery_X_test):
+        s_ns_test, x_ns_test, ts_ns_test = recovery_X_test
+        return [np.array(self.agg_medians.xs(list(x)).loc[map(median_fitter.time_key,ts)])*s for (s,x,ts) in itertools.izip(s_ns_test, x_ns_test, ts_ns_test)]
+
+class scaled_median_fitter(object):
+
+    @classmethod
+    def time_key(cls, t):
+        return 't%d' % t
+    
+    def fit(self, recovery_X_train, ys_ns_train, recovery_X_test, ys_ns_test):
+        """
+        convert ys_ns, ts_ns back into dataframe
+        """
+        s_ns_test, x_ns_test, ts_ns_test = recovery_X_test
+        ys_ns_test_df = pd.DataFrame({i:pd.Series(ys, index=map(median_fitter.time_key, ts)) for (i,(ts,ys)) in enumerate(zip(ts_ns_test, ys_ns_test))}).T
+        s_ns_test_series = pd.Series(s_ns_test)
+        scaled_ys_ns_test_df = (ys_ns_test_df.T / s_ns_test_series).T
+        xs_test_df = pd.DataFrame(x_ns_test)
+
+        s_ns_train, x_ns_train, ts_ns_train = recovery_X_train
+        ys_ns_train_df = pd.DataFrame({i:pd.Series(ys, index=map(median_fitter.time_key, ts)) for (i,(ts,ys)) in enumerate(zip(ts_ns_train, ys_ns_train))}).T
+        s_ns_train_series = pd.Series(s_ns_train)
+        scaled_ys_ns_train_df = (ys_ns_train_df.T / s_ns_train_series).T
+        xs_train_df = pd.DataFrame(x_ns_train)
+
+        xs_df = pd.concat([xs_test_df, xs_train_df])
+        scaled_ys_ns_df = pd.concat([scaled_ys_ns_test_df, scaled_ys_ns_train_df])
+        
+        joined_df = pd.concat([xs_df, scaled_ys_ns_df], axis=1)
+        agg_medians = joined_df.groupby(xs_df.columns.values.tolist()).median()
+#        agg_medians = joined_df.groupby(xs_df.columns.values.tolist()).mean()
+        return scaled_median_predictor(agg_medians)
+
+            
+
 recovery_X_elt = namedtuple('recovery_X_elt', ['s','x','ts'])
         
     
@@ -585,7 +680,10 @@ class recovery_X(recovery_X_base):
     def __len__(self):
         return len(self.s_ns)
 
-    
+    def iterrows(self):
+        return itertools.izip(self.s_ns, self.x_ns, self.ts_ns)
+
+        
 class kfold_recovery_data_cv(object):
 
     def __init__(self, k):
@@ -596,7 +694,19 @@ class kfold_recovery_data_cv(object):
         kf = KFold(len(recovery_X), n_folds=self.k)
         return [((recovery_X.my_getitem(train_idx), ys_ns[train_idx]), (recovery_X.my_getitem(test_idx), ys_ns[test_idx])) for (train_idx,test_idx) in kf]
 
-    
+
+class my_kfold_recovery_data_cv(object):
+
+    def __init__(self, k):
+        self.k = k
+
+    def __call__(self, recovery_X, ys_ns):
+        from sklearn.cross_validation import KFold
+        l = len(recovery_X)
+        kf = [[[i for i in range(l) if i % self.k != idx],[j for j in range(l) if j % self.k == idx]] for idx in range(self.k)]
+        #kf = KFold(len(recovery_X), n_folds=self.k)
+        return [((recovery_X.my_getitem(train_idx), ys_ns[train_idx]), (recovery_X.my_getitem(test_idx), ys_ns[test_idx])) for (train_idx,test_idx) in kf]
+        
 ############################
 # BELOW IS SCRATCH FOR NOW #
 ############################
