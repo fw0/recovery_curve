@@ -394,13 +394,8 @@ def get_everything_with_test_phis_fixed_dist_traces_helper(n_steps, random_seed,
     return traces(fit.extract(permuted=True), fit.extract(permuted=False), fit.data)
 
 
-def get_agreggate_loss(aggregate_f, loss_f, ts_ns, true_ys_ns, predicted_ys_ns):
-    """
-    assume times are ints
-    """
-
 def decay_f(initial, asymptotic, c, t):
-    return initial - (asymptotic - initial) * np.exp(-t / c)
+    return initial + (asymptotic - initial) * np.exp(-t / c)
     
 def fit_decay_f(ts, ys):
     import scipy.optimize
@@ -416,19 +411,10 @@ def fit_average_shape(s_ns, ts_ns, ys_ns):
     
     def obj_f((a,b,c)):
         pred = pd.DataFrame([pd.Series([recovery_utils.f(s_i,a,b,c,t) for t in ts_i], index=ts_i) for (s_i,ts_i) in itertools.izip(s_ns,ts_ns)])
-        ans = (pred - d).apply(lambda x: x**2).sum().sum()
-        """
-        idx=1
-        t = 2
-        print d.iloc[idx,:]
-        print d.iloc[idx,t],pred.iloc[idx,t], a, b, c, s_ns[idx], recovery_utils.f(s_ns[idx],a,b,c,d.columns[t])
-        print ans
-        """
-        return ans
+        return (pred - d).apply(lambda x: x**2).sum().sum()
+
     (a,b,c), f, d = scipy.optimize.fmin_l_bfgs_b(obj_f, np.array([0.5, 0.5, 2.0]), approx_grad = True, bounds = [(0.00,1.0),[0.00,1.0],[0.01,None]])
 
-    print 'OOOOOOO', a, b, c
-     
     return a,b,c
 
 def abs_timewise_error(true_ys_ns, pred_ys_ns, ts_ns):
